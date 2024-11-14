@@ -120,11 +120,11 @@ func (h *WalletHandler) updateBalance(tx *sql.Tx, walletID uuid.UUID, newBalance
 	return nil
 }
 
-func (h *WalletHandler) recordTransaction(tx *sql.Tx, walletID uuid.UUID, operationType wallet.OperationType, amount float64) error {
+func (h *WalletHandler) recordTransaction(tx *sql.Tx, walletID uuid.UUID, amount float64, operationType wallet.OperationType) error {
 	_, err := tx.Exec(`
-		INSERT INTO transactions (wallet_id, operation_type, amount, created_at)
+		INSERT INTO transactions (wallet_id, amount, operation_type, created_at)
 		VALUES ($1, $2, $3, NOW())
-	`, walletID, operationType, amount)
+	`, walletID, amount, operationType)
 	if err != nil {
 		return fmt.Errorf("ошибка при записи транзакции: %w", err)
 	}
@@ -162,7 +162,7 @@ func (h *WalletHandler) handleDeposit(w http.ResponseWriter, req *wallet.WalletR
 		return err
 	}
 
-	if err := h.recordTransaction(tx, req.WalletID, req.OperationType, req.Amount); err != nil {
+	if err := h.recordTransaction(tx, req.WalletID, req.Amount, req.OperationType); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err
 	}
@@ -207,7 +207,7 @@ func (h *WalletHandler) handleWitdraw(w http.ResponseWriter, req *wallet.WalletR
 		return err
 	}
 
-	if err := h.recordTransaction(tx, req.WalletID, req.OperationType, -req.Amount); err != nil {
+	if err := h.recordTransaction(tx, req.WalletID, -req.Amount, req.OperationType); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err
 	}
