@@ -18,7 +18,7 @@ vendor/
 go.work
 
 # Environment variables
-.env
+*.env
 
 # IDE specific files
 .idea/

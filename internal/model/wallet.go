@@ -1,7 +1,5 @@
 package wallet
 
-import "github.com/google/uuid"
-
 type OperationType string
 
 const (
@@ -10,7 +8,7 @@ const (
 )
 
 type WalletRequest struct {
-	WalletID      uuid.UUID     `json:"walletId"`
-	OperationType OperationType `json:"operationType"`
+	WalletID      string        `json:"wallet_id"`
+	OperationType OperationType `json:"operation_type"`
 	Amount        float64       `json:"amount"`
 }
