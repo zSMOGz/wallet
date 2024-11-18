@@ -16,7 +16,10 @@ func TestAll(t *testing.T) {
 
 func TestRedisCache(t *testing.T) {
 	ctx := context.Background()
-	cache := NewRedisCache("localhost:6379")
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	cache := NewRedisCache(redisClient)
 
 	t.Run("Базовые операции", func(t *testing.T) {
 		// Проверяем подключение
@@ -54,7 +57,7 @@ func TestRedisCache(t *testing.T) {
 
 	t.Run("Конструктор", func(t *testing.T) {
 		// Проверяем создание экземпляра
-		c := NewRedisCache("localhost:6379")
+		c := NewRedisCache(redisClient)
 		assert.NotNil(t, c)
 		assert.NotNil(t, c.client)
 	})
@@ -98,7 +101,10 @@ func TestRedisCache(t *testing.T) {
 }
 
 func TestNewRedisCache(t *testing.T) {
-	cache := NewRedisCache("localhost:6379")
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	cache := NewRedisCache(redisClient)
 	assert.NotNil(t, cache)
 	assert.NotNil(t, cache.client)
 }

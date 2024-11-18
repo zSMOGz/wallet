@@ -18,6 +18,7 @@ import (
 	wallet "wallet/internal/model"
 
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,11 +95,10 @@ func setupTestServer(t *testing.T) (*httptest.Server, func(), string) {
 		t.Fatalf("Ошибка подключения к БД: %v", err)
 	}
 
-	// Инициализация Redis
-	redisAddr := fmt.Sprintf("%s:%s",
-		os.Getenv("REDIS_HOST"),
-		os.Getenv("REDIS_PORT"))
-	cacheClient := cache.NewRedisCache(redisAddr)
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: fmt.Sprintf("%s:%s", os.Getenv("REDIS_HOST"), os.Getenv("REDIS_PORT")),
+	})
+	cacheClient := cache.NewRedisCache(redisClient)
 
 	// Создаём обработчики
 	walletHandler := handler.NewWalletHandler(database, cacheClient, false)
@@ -142,28 +142,57 @@ func TestLoadPerformance(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	// Увеличиваем время ожидания после депозита
 	time.Sleep(500 * time.Millisecond)
 
-	requestsCount := 1000
-	concurrentRequests := 20 // уменьшаем количество одновременных запросов
-	var wg sync.WaitGroup
-	errors := make(chan error, requestsCount)
+	requestsPerSecond := 1000
+	testDuration := 4 * time.Second
 
+	// Создаем HTTP клиент с таймаутом
 	client := &http.Client{
-		Timeout: 10 * time.Second, // увеличиваем таймаут
+		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 100,
-			IdleConnTimeout:     30 * time.Second,
-			DisableCompression:  true, // отключаем сжатие
+			MaxIdleConns:        1000,
+			MaxIdleConnsPerHost: 1000,
+			IdleConnTimeout:     90 * time.Second,
 		},
 	}
 
 	start := time.Now()
+	ticker := time.NewTicker(time.Second / time.Duration(requestsPerSecond))
+	defer ticker.Stop()
+	// Создаём буфер для ошибок
+	errors := make(chan error, requestsPerSecond*5)
+	done := make(chan bool)
 
-	for i := 0; i < requestsCount; i += concurrentRequests {
-		for j := 0; j < concurrentRequests && i+j < requestsCount; j++ {
+	var wg sync.WaitGroup
+
+	go func() {
+		time.Sleep(testDuration)
+		done <- true
+	}()
+
+	for {
+		select {
+		case <-done:
+			wg.Wait() // ждем завершения всех запросов
+			close(errors)
+
+			var errCount int
+			for err := range errors {
+				errCount++
+				t.Errorf("Ошибка запроса: %v", err)
+			}
+
+			duration := time.Since(start)
+			actualRPS := float64(requestsPerSecond*5-errCount) / duration.Seconds()
+
+			t.Logf("Тест производительности занял: %v", duration)
+			t.Logf("Фактический RPS: %.2f", actualRPS)
+			require.Equal(t, 0, errCount, "Тест должен быть без ошибок")
+			require.GreaterOrEqual(t, actualRPS, float64(requestsPerSecond), "RPS должен быть не менее 1000")
+			return
+
+		case <-ticker.C:
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -171,49 +200,24 @@ func TestLoadPerformance(t *testing.T) {
 				url := fmt.Sprintf("%s/api/v1/wallets/%s", ts.URL, testWalletID)
 				resp, err := client.Get(url)
 				if err != nil {
-					errors <- fmt.Errorf("request error: %v", err)
+					errors <- fmt.Errorf("ошибка запроса: %v", err)
 					return
 				}
 				defer resp.Body.Close()
 
 				if resp.StatusCode != http.StatusOK {
-					errors <- fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+					errors <- fmt.Errorf("неверный статус код: %d", resp.StatusCode)
 					return
 				}
 
 				var result interface{}
 				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					errors <- fmt.Errorf("ошибка декодирования ответа: %v", err)
 					return
 				}
 			}()
 		}
-		// Увеличиваем паузу между группами запросов
-		time.Sleep(time.Millisecond * 50)
 	}
-
-	wg.Wait()
-	close(errors)
-	duration := time.Since(start)
-
-	// Подсчёт ошибок
-	var errorCount int
-	for err := range errors {
-		errorCount++
-		t.Logf("Request error: %v", err)
-	}
-
-	successCount := requestsCount - errorCount
-	requestsPerSecond := float64(successCount) / duration.Seconds()
-
-	t.Logf("Выполнено %d запросов (успешно: %d) за %.2f секунд",
-		requestsCount, successCount, duration.Seconds())
-	t.Logf("Запросов в секунду: %.2f", requestsPerSecond)
-
-	assert.True(t, duration < 5*time.Second,
-		"Тест выполнялся слишком долго: %v", duration)
-	assert.True(t, float64(successCount)/float64(requestsCount) >= 0.95,
-		"Слишком много ошибок: %d из %d запросов неуспешны",
-		errorCount, requestsCount)
 }
 
 func TestDatabaseConnectionErrors(t *testing.T) {
@@ -257,7 +261,7 @@ func TestDatabaseConnectionErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			db, err := db.NewPostgresConnection(tt.dbURL)
 
-			// Проверяем, что п��лучили ожидаемую ошибку
+			// Проверяем, что плучили ожидаемую ошибку
 			assert.Error(t, err)
 			expectedErr := tt.errText
 			assert.Contains(t, err.Error(), expectedErr)
@@ -382,15 +386,16 @@ func TestRedisConnection(t *testing.T) {
 	redisPort := os.Getenv("REDIS_PORT")
 
 	if redisHost == "" {
-		redisHost = "localhost" // значение по умолчанию
+		redisHost = "localhost"
 	}
 	if redisPort == "" {
-		redisPort = "6379" // стандартный порт Redis
+		redisPort = "6379"
 	}
 
-	redisAddr := fmt.Sprintf("%s:%s", redisHost, redisPort)
-
-	cache := cache.NewRedisCache(redisAddr)
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: fmt.Sprintf("%s:%s", redisHost, redisPort),
+	})
+	cache := cache.NewRedisCache(redisClient)
 	ctx := context.Background()
 
 	err := cache.Client().Ping(ctx).Err()
